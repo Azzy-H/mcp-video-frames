@@ -24,19 +24,28 @@ mcp-config.json
 
 # Test and tooling scratch space
 .pytest_cache/
-.pytest-tmp/
-.pytest-tmp*/
 pytest-cache-files-*/
-.test-tmp/
-.tmp/
 .pydeps/
 .pycache-prefix/
+
+# Anything whose name contains `tmp`, as a directory.  The leading AND trailing
+# wildcard both matter: scratch directories here are named `<prefix>-tmp` and
+# `<prefix>-tmp-<pid>`, and a trailing-only `*tmp/` silently misses the second
+# form — which had left a test video, extracted frames and cache JSON staged for
+# commit.  This one rule also covers `.test-tmp/`, `.tmp/`, `.diag-tmp/` and
+# `tmp########/`.
+*tmp*/
 
 # Bare `tmp########` directories appear in the working directory of a confined
 # environment rather than the project: they are empty, indistinguishable from
 # tempfile.mkdtemp's default naming, and cannot be deleted by the process that
 # sees them. Ignoring the pattern keeps them out of any `git add -A`.
 tmp*/
+
+# pip's own scratch, left in the working directory when its temp directory is
+# redirected there during a local install attempt.
+.piptmp/
+.smoke-tmp/
 
 # The specification this project was built from. Kept locally as a record of
 # what was asked for; it describes intent rather than the shipped behaviour, so

@@ -42,6 +42,19 @@ DEFAULT_SCENE_THRESHOLD = 0.3
 DEFAULT_CACHE_DIRNAME = "mcp-video-frames-cache"
 CACHE_DIR_ENV = "MCP_VIDEO_CACHE_DIR"
 
+#: How long one whole-file scan pass may take.  A backstop against a hung
+#: ffmpeg, not a performance target.
+SCAN_PHASE_TIMEOUT = 12 * 3600.0
+
+#: How long to wait for another process to finish with the same video.
+#:
+#: This MUST exceed what that process can legitimately hold the per-video lock
+#: for, which is one full scan — all of it, not one pass of it.  A caller that
+#: times out here gets an error, so an under-sized value turns "a second client
+#: looked at the same long video" into a spurious failure.  Three passes
+#: (scene, silence, loudness) plus room for the extraction around them.
+VIDEO_LOCK_TIMEOUT = 3 * SCAN_PHASE_TIMEOUT + 600.0
+
 _ENV_PREFIX = "MCP_VIDEO_"
 
 

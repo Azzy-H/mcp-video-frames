@@ -18,14 +18,18 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .config import SCAN_PHASE_TIMEOUT
 from .errors import FfmpegError
 from .ffmpeg import Tools, excerpt, run_ffmpeg
 
 #: A whole-file scan is allowed to take a while; this is a backstop against
-#: a hung process, not a performance target.
-SCENE_TIMEOUT = 12 * 3600.0
-SILENCE_TIMEOUT = 12 * 3600.0
-LOUDNESS_TIMEOUT = 12 * 3600.0
+#: a hung process, not a performance target.  Kept as separate names because
+#: each pass is timed independently, but all three come from one constant so
+#: the per-video lock timeout in :mod:`mcp_video_frames.config` cannot drift
+#: away from them again.
+SCENE_TIMEOUT = SCAN_PHASE_TIMEOUT
+SILENCE_TIMEOUT = SCAN_PHASE_TIMEOUT
+LOUDNESS_TIMEOUT = SCAN_PHASE_TIMEOUT
 
 _PTS_TIME_RE = re.compile(r"pts_time:([0-9]+(?:\.[0-9]+)?)")
 _SILENCE_START_RE = re.compile(r"silence_start:\s*(-?[0-9]+(?:\.[0-9]+)?)")

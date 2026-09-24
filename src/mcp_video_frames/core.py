@@ -213,23 +213,55 @@ class Core:
         return self.cache.register(identity, source)
 
     def video_basic_info(
-        self, video: str, *, force: bool = False, use_cache: bool = True
+        self, video: str, *, force: bool = False
     ) -> tuple[dict[str, Any], CachedVideo]:
-        """``basic`` metadata, from cache when possible."""
+        """``basic`` metadata, from cache when possible.
+
+        The cache entry is registered only *after* the probe succeeds.  Doing
+        it first, as an earlier version did, meant that pointing the tool at a
+        file ffmpeg cannot read (a text file, a corrupt download) left a
+        permanent entry behind: the directory and ``source.json`` were on disk
+        and the index listed them, so the entry looked like a real video to
+        ``cache --stats`` and orphan collection could not touch it — the source
+        file still exists and still matches.
+        """
         path = self.resolve_video(video)
         identity, source = file_identity(path)
+        if not force:
+            # A previously registered entry can still be consulted; only a
+            # first-ever failure is the case that used to litter the index.
+            existing = self.cache.get(identity)
+            if existing is not None:
+                stored = self.cache.read_meta(existing, "basic")
+                if stored is not None:
+                    self.cache.touch(identity)
+                    return stored, existing
+        payload = self._probe_or_input_error(path)
         cached = self.cache.register(identity, source)
-        if use_cache and not force:
-            stored = self.cache.read_meta(cached, "basic")
-            if stored is not None:
-                self.cache.touch(identity)
-                return stored, cached
-        payload = probe.probe_basic(self.tools, path)
         payload["path"] = str(path)
         payload["size_bytes"] = source["size"]
         payload["sha256"] = identity
         self.cache.write_meta(cached, "basic", payload)
         return payload, cached
+
+    def _probe_or_input_error(self, path: Path) -> dict[str, Any]:
+        """Probe ``path``, turning "ffmpeg cannot read this" into an input error.
+
+        A file that exists but is not video makes ffprobe exit non-zero, and
+        the raw ``run_ffprobe`` error is then a command line plus ffmpeg's
+        wording.  That is useless to a caller, and inconsistent with a missing
+        path — which already produces a clean message.  Both are the same user
+        mistake, so both get the same kind of message; ffmpeg's own output is
+        kept in ``detail`` for the operator who needs to see it.
+        """
+        try:
+            return probe.probe_basic(self.tools, path)
+        except FfmpegError as exc:
+            raise InputError(
+                f"Cannot read {path.name} as a video file: ffmpeg reported "
+                f"no usable video stream. Pass the path of a video file.",
+                detail=exc.detail or exc.message,
+            ) from exc
 
     def video_full_info(self, video: str, *, force: bool = False) -> dict[str, Any]:
         """``basic`` metadata plus the whole-file scan (cached, expensive)."""

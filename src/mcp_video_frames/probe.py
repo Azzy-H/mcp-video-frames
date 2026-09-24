@@ -169,9 +169,6 @@ def probe_basic(tools: Tools, video: Path) -> dict[str, Any]:
     color_primaries = str(video_stream.get("color_primaries") or "").lower()
     pix_fmt = str(video_stream.get("pix_fmt") or "")
     is_hdr = color_transfer in HDR_TRANSFERS or color_primaries in HDR_PRIMARIES
-    if not is_hdr and pix_fmt.startswith(("yuv420p10", "yuv420p12", "yuv422p10")):
-        # 10/12-bit 4:2:0 is almost always an HDR master.
-        is_hdr = color_transfer in HDR_TRANSFERS or color_primaries in HDR_PRIMARIES
 
     audio_tracks = [
         {

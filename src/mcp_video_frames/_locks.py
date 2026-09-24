@@ -24,6 +24,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .config import VIDEO_LOCK_TIMEOUT
+
 try:  # pragma: no cover - depends on the environment
     from filelock import FileLock, Timeout
 
@@ -42,7 +44,11 @@ except ImportError:  # pragma: no cover - exercised only without filelock
         detected by age and removed.
         """
 
-        STALE_SECONDS = 600.0
+        #: Derived from the longest legitimate hold, so a lock taken for a
+        #: whole-file scan is never mistaken for one left behind by a crash.
+        #: A fixed value here (600 s was the original) is shorter than a scan
+        #: is allowed to run, which would let a second process in to repeat it.
+        STALE_SECONDS = VIDEO_LOCK_TIMEOUT + 600.0
 
         def __init__(self, lock_file: str, timeout: float = -1) -> None:
             self.lock_file = lock_file

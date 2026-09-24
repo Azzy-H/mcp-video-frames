@@ -271,11 +271,12 @@ def extract_range(
     are computed from the grid, and that convention is only trustworthy if the
     number of files matches the number of grid points claimed.
 
-    Fewer files than requested is legitimate only when the range runs to the
-    very end of the input, where the decoder stops producing samples.  The
-    caller (:mod:`mcp_video_frames.core`) reconciles the plan with the actual
-    count and reports the frames that exist; a *larger* count is always an
-    error, because it would mean the grid itself is wrong.
+    A *larger* count is always an error, because it would mean the grid itself
+    is wrong.  A *smaller* one is returned as-is: the decoder stops producing
+    samples when the range runs to the very end of the input, and only the
+    caller knows whether that happened.  Reconciling plan against reality is
+    therefore the caller's job (:meth:`mcp_video_frames.core.Core._extract_missing`),
+    not this function's.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     ext = "png" if image_format == "png" else "jpg"

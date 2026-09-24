@@ -362,16 +362,80 @@ class TestFramesCommand:
         blocks = json.loads(capsys.readouterr().out)
         assert [block["type"] for block in blocks] == ["text", "image", "text", "image", "text"]
         assert json.loads(blocks[0]["text"]) == {"n": 0, "t": 0.0}
+        # Without --images-dir this is a real content-block sequence, so an
+        # image block's `data` must decode as base64.
+        import base64
+
+        base64.b64decode(blocks[1]["data"], validate=True)
+
+    def test_no_content_blocks_with_images_dir_still_writes_the_files(
+        self, fake_core, tmp_path, capsys
+    ):
+        """The two flags together: files on disk, summary on stdout, no blocks."""
+        fake_core()
+        out_dir = tmp_path / "images"
+        assert cli.main(
+            ["frames", "v.mp4", "--images-dir", str(out_dir), "--no-content-blocks"]
+        ) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["blocks"] == 5
+        assert "paths" not in payload
+        assert payload["summary"]["frames"] == 2
+        assert len(sorted(out_dir.iterdir())) == 2
 
     def test_images_dir_writes_files_instead_of_base64(self, fake_core, tmp_path, capsys):
         fake_core()
         out_dir = tmp_path / "images"
         assert cli.main(["frames", "v.mp4", "--images-dir", str(out_dir)]) == 0
-        blocks = json.loads(capsys.readouterr().out)
+        document = json.loads(capsys.readouterr().out)
         written = sorted(out_dir.iterdir())
         assert len(written) == 2
-        assert blocks[1]["data"] == str(written[0])
-        assert blocks[1]["dataEncoding"] == "path"
+
+        # Wrapped, and the envelope says what `data` holds.  Emitting the bare
+        # block sequence here would be indistinguishable from real MCP content
+        # blocks, whose `data` field IS the base64 payload — a consumer would
+        # decode a filename.
+        assert document["paths"] is True
+        blocks = document["blocks"]
+        assert [block["type"] for block in blocks] == [
+            "text",
+            "image",
+            "text",
+            "image",
+            "text",
+        ]
+        image = blocks[1]
+        assert image["data"].startswith(cli.PATH_SCHEME)
+        assert image["data"][len(cli.PATH_SCHEME) :] == str(written[0])
+
+    def test_images_dir_does_not_invent_a_per_block_field(self, fake_core, tmp_path, capsys):
+        """The signal belongs at the top, not repeated inside every block."""
+        fake_core()
+        assert cli.main(["frames", "v.mp4", "--images-dir", str(tmp_path / "i")]) == 0
+        blocks = json.loads(capsys.readouterr().out)["blocks"]
+        for block in blocks:
+            expected = {"type", "text"} if block["type"] == "text" else {
+                "type",
+                "data",
+                "mimeType",
+            }
+            assert set(block) == expected, block
+
+    def test_images_dir_keeps_every_block(self, fake_core, tmp_path, capsys):
+        """Same 2n+1 sequence as without the flag; only `data` differs."""
+        fake_core()
+        assert cli.main(["frames", "v.mp4", "--images-dir", str(tmp_path / "i")]) == 0
+        with_paths = json.loads(capsys.readouterr().out)["blocks"]
+        assert cli.main(["frames", "v.mp4"]) == 0
+        plain = json.loads(capsys.readouterr().out)
+        assert [b["type"] for b in with_paths] == [b["type"] for b in plain]
+        # Text blocks are untouched; image blocks differ only in `data`.
+        for sparse, normal in zip(with_paths, plain):
+            if sparse["type"] == "text":
+                assert sparse == normal
+            else:
+                assert sparse["mimeType"] == normal["mimeType"]
+                assert sparse["data"] != normal["data"]
 
     def test_arguments_reach_the_core(self, fake_core):
         core = fake_core()

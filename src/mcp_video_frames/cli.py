@@ -33,11 +33,12 @@ PROGRAM = "mcp-video-frames"
 def ensure_utf8_stdio() -> None:
     """Force UTF-8 for our own stdout/stderr.
 
-    Messages are written in Chinese and JSON is emitted on stdout; on a
-    Windows console with a legacy code page (cp1252, cp936, ...) those would
-    be mangled into unreadable bytes, and a redirected stdout would be written
-    as UTF-16, which no JSON parser accepts.  Both front ends call this, so the
-    output is the same regardless of platform default.
+    JSON is emitted on stdout and messages on stderr, and both can carry
+    non-ASCII text — a video's path, for instance.  On a Windows console with a
+    legacy code page (cp1252, cp936, ...) those would be mangled into
+    unreadable bytes, and a redirected stdout would be written as UTF-16, which
+    no JSON parser accepts.  Both front ends call this, so the output is the
+    same regardless of platform default.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -120,7 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Extract frames and emit exactly the content-block sequence the MCP "
             "tool view_frames produces. With --images-dir the images are written "
-            "to files instead, which is easier to check by eye."
+            "to files instead and the sequence is wrapped in an envelope that "
+            "says so, because a block whose data holds a path is not a valid "
+            "content block."
         ),
     )
     frames.add_argument("video", help="path to a video file")
@@ -138,7 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
     frames.add_argument(
         "--images-dir",
         default=None,
-        help="write the images to this directory and report paths instead of base64",
+        help=(
+            "write the images to this directory; the output becomes "
+            "{'paths': true, 'blocks': [...]} where each image block's data is "
+            "a file: reference rather than base64"
+        ),
     )
     frames.add_argument(
         "--no-content-blocks",
@@ -285,6 +292,45 @@ def cmd_scan(core: Core, args: argparse.Namespace) -> int:
     return EXIT_ERROR if failures else EXIT_OK
 
 
+#: Prefix marking an image block's ``data`` as a file reference, not base64.
+PATH_SCHEME = "file:"
+
+
+def _write_frame_files(
+    result, blocks: list[dict[str, str]], out_dir: Path
+) -> list[dict[str, str]]:
+    """Write each frame to disk and point its block at the file.
+
+    The result is a *document*, not the content-block sequence: an MCP image
+    block's ``data`` field **is** the base64 payload, so a block whose ``data``
+    holds a path is not a valid one — a consumer that trusts the shape decodes
+    a filename and fails, and ``mimeType`` describes bytes that are not there.
+    Emitting that shape anyway is worse than emitting a different one, because
+    the difference is invisible.
+
+    So the block sequence is kept intact — same count, same order, same ``type``
+    and ``mimeType``, so the output still lines up with what ``view_frames``
+    returns — and only the image blocks' ``data`` becomes a ``file:`` reference.
+    The envelope's ``paths`` key says so once, at the top.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ext = "png" if result.plan.image_format == "png" else "jpg"
+    by_index = {frame.n: frame for frame in result.frames}
+    document: list[dict[str, str]] = []
+    # Image blocks sit at odd indices: [text, image] * n + [text].
+    for index, block in enumerate(blocks):
+        if index % 2 == 0 or index >= 2 * len(result.frames):
+            document.append(block)
+            continue
+        frame = by_index[index // 2]
+        target = out_dir / f"n{frame.n:04d}_t{frame.t:09.3f}.{ext}"
+        target.write_bytes(frame.data)
+        replaced = dict(block)
+        replaced["data"] = f"{PATH_SCHEME}{target}"
+        document.append(replaced)
+    return document
+
+
 def cmd_frames(core: Core, args: argparse.Namespace) -> int:
     result = core.view_frames(
         args.video,
@@ -302,17 +348,15 @@ def cmd_frames(core: Core, args: argparse.Namespace) -> int:
 
     if args.images_dir:
         out_dir = Path(args.images_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ext = "png" if result.plan.image_format == "png" else "jpg"
-        for frame in result.frames:
-            target = out_dir / f"n{frame.n:04d}_t{frame.t:09.3f}.{ext}"
-            target.write_bytes(frame.data)
-            frame_block = blocks[2 * frame.n + 1]
-            frame_block["data"] = str(target)
-            frame_block["dataEncoding"] = "path"
+        blocks = _write_frame_files(result, blocks, out_dir)
 
     if args.no_content_blocks:
         _print_json({"summary": result.summary, "blocks": len(blocks)})
+    elif args.images_dir:
+        # Wrapped, because the block sequence alone would be indistinguishable
+        # from real content blocks.  `paths` is the one signal a consumer needs.
+        _print_json({"paths": True, "blocks": blocks})
+        print(json.dumps(result.summary, ensure_ascii=False), file=sys.stderr)
     else:
         _print_json(blocks)
         print(json.dumps(result.summary, ensure_ascii=False), file=sys.stderr)

@@ -27,7 +27,10 @@ import pytest
 from mcp_video_frames.cache import frame_filename, frame_timestamps
 from mcp_video_frames.config import Config
 from mcp_video_frames.core import Core, build_content_blocks
-from mcp_video_frames.errors import FfmpegError, LimitError
+from mcp_video_frames.errors import FfmpegError, InputError, LimitError
+
+#: The checkout root, for files that exist but are not video.
+ROOT = Path(__file__).resolve().parents[1]
 
 pytestmark = pytest.mark.integration
 
@@ -250,6 +253,92 @@ class TestVideoInfo:
         core.video_full_info(str(test_video))
         forced = core.video_full_info(str(test_video), force=True)
         assert forced["scan"]["cached"] is False
+
+
+class TestUnreadableFileLeavesNoTrace:
+    """A probe that fails must not publish a cache entry.
+
+    The entry used to be registered *before* the probe ran, so pointing the
+    tool at something ffmpeg cannot read (a text file, a corrupt download) left
+    a permanent entry: its directory and ``source.json`` existed and the index
+    listed them, which made it look like a real video to ``cache --stats`` and
+    put it beyond orphan collection — the source file still existed and still
+    matched.
+    """
+
+    def test_failed_probe_registers_nothing(self, core):
+        with pytest.raises(InputError):
+            core.video_basic_info(str(ROOT / "README.md"))
+
+        index_path = core.cache.root / "index.json"
+        assert not index_path.exists(), (
+            "a failed probe created an index: "
+            f"{index_path.read_text(encoding='utf-8') if index_path.exists() else ''}"
+        )
+
+    def test_failed_probe_leaves_no_video_directory(self, core):
+        with pytest.raises(InputError):
+            core.video_basic_info(str(ROOT / "README.md"))
+        videos = core.cache.root / "videos"
+        leftovers = list(videos.iterdir()) if videos.is_dir() else []
+        assert leftovers == [], leftovers
+
+    def test_cache_stats_stays_empty_after_a_failed_probe(self, core):
+        with pytest.raises(InputError):
+            core.video_basic_info(str(ROOT / "README.md"))
+        stats = core.cache_stats()
+        assert stats["videos"] == 0
+        assert stats["entries"] == []
+
+    def test_a_good_video_still_registers_afterwards(self, core, test_video):
+        """The reordering must not have broken the normal path."""
+        with pytest.raises(InputError):
+            core.video_basic_info(str(ROOT / "README.md"))
+        payload, _cached = core.video_basic_info(str(test_video))
+        assert payload["duration"] == pytest.approx(10.0, abs=0.5)
+        assert core.cache_stats()["videos"] == 1
+
+    def test_non_video_file_reports_an_input_error_not_a_command_line(self, core):
+        """The caller's *message* is clean; ffmpeg's words move to the detail.
+
+        Both are still sent (see ``server._tool_error``), which is deliberate —
+        the diagnosis stays available — but the headline a model reasons about
+        is now the same kind of sentence a missing path produces, instead of a
+        command line.
+        """
+        with pytest.raises(InputError) as excinfo:
+            core.video_basic_info(str(ROOT / "README.md"))
+        exc = excinfo.value
+        assert "README.md" in exc.message
+        assert "video file" in exc.message
+        # The command line is no longer the headline.
+        assert "ffprobe failed" not in exc.message
+        assert "ffprobe failed" in str(exc.detail)
+
+    def test_missing_path_and_unreadable_file_agree(self, core):
+        with pytest.raises(InputError) as missing:
+            core.video_basic_info(str(ROOT / "definitely-absent.mp4"))
+        with pytest.raises(InputError) as unreadable:
+            core.video_basic_info(str(ROOT / "README.md"))
+        assert type(missing.value) is type(unreadable.value) is InputError
+
+    def test_an_unreadable_source_json_is_not_reclaimed_while_its_bytes_exist(
+        self, core, test_video
+    ):
+        """Documents the orphan rule: a surviving directory keeps its entry.
+
+        Dropping such an entry would desynchronise the index from the bytes on
+        disk, which both ``cache --stats`` and the LRU sizing measure.
+        """
+        core.video_basic_info(str(test_video))
+        identity = core.cache.read_index()["entries"]
+        assert len(identity) == 1
+        (key,) = identity
+        (core.cache.video_dir(key) / "source.json").unlink()
+
+        report = core.prune_cache()
+        assert report["removed_orphans"] == 0
+        assert core.cache.read_index()["entries"], "entry was dropped"
 
 
 class TestViewFrames:

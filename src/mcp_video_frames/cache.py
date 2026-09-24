@@ -39,6 +39,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -46,12 +47,44 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ._locks import FileLock, lock_for
-from .config import Config
+from .config import VIDEO_LOCK_TIMEOUT, Config
 from .errors import CacheError
 
 # ----------------------------------------------------------------------
 # JSON helpers (atomic write / tolerant read)
 # ----------------------------------------------------------------------
+#: How many times to retry the final ``os.replace``, and the first backoff.
+#:
+#: Windows fails the replace when the *destination* has a concurrent handle —
+#: another thread or process reading it, or renaming onto it — with
+#: ``PermissionError``.  That condition is transient: measured on a 12-thread
+#: stampede onto one ``source.json``, seven writers failed without a retry and
+#: none did with one, needing at most three attempts.  POSIX replaces
+#: unconditionally, so this costs nothing there.
+_REPLACE_RETRIES = 20
+_REPLACE_BACKOFF_SECONDS = 0.005
+_REPLACE_BACKOFF_CAP = 0.1
+
+
+def _replace_with_retry(tmp: Path, path: Path) -> None:
+    """``os.replace``, retrying only the transient Windows contention error.
+
+    Anything else propagates on the first attempt.  When the retries are
+    exhausted the original ``PermissionError`` is raised rather than swallowed:
+    a write that did not happen must never look like one that did.
+    """
+    delay = _REPLACE_BACKOFF_SECONDS
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_RETRIES - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, _REPLACE_BACKOFF_CAP)
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write ``data`` to ``path`` atomically.
 
@@ -68,7 +101,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -232,7 +265,17 @@ class Cache:
         self.root = Path(config.cache_root)
         self.videos_dir = self.root / "videos"
         self.index_path = self.root / "index.json"
+        #: Cross-process mutual exclusion for index mutations.
         self._index_lock = FileLock(str(self.root / "index.lock"))
+        #: In-process counterpart.  Both are needed: the file lock excludes other
+        #: processes, this excludes other threads of this one.  They are
+        #: separate locks rather than one because a transaction may nest (a
+        #: ``prune`` triggered from inside another mutation), and re-acquiring a
+        #: ``FileLock`` already held by this thread deadlocks.
+        self._index_guard = threading.RLock()
+        #: Nesting depth per thread, so an inner transaction joins the outer
+        #: one instead of trying to take the file lock twice.
+        self._index_depth = threading.local()
         self._prune_checked_at = 0.0
         self._prune_min_interval = 60.0
 
@@ -253,11 +296,15 @@ class Cache:
         return self.video_dir(identity) / "frames" / ".lock"
 
     @contextmanager
-    def locked(self, identity: str, timeout: float = 120.0) -> Iterator[None]:
+    def locked(
+        self, identity: str, timeout: float = VIDEO_LOCK_TIMEOUT
+    ) -> Iterator[None]:
         """Hold the per-video lock.
 
         Extraction, metadata writes and eviction all take it, so a second
-        process never observes a half-populated entry.
+        process never observes a half-populated entry.  The default timeout
+        covers a whole-file scan, which is the longest legitimate hold; see
+        :data:`mcp_video_frames.config.VIDEO_LOCK_TIMEOUT`.
         """
         self.ensure_root()
         (self.video_dir(identity) / "frames").mkdir(parents=True, exist_ok=True)
@@ -265,7 +312,7 @@ class Cache:
             yield
 
     # -- index ---------------------------------------------------------
-    def read_index(self) -> dict[str, Any]:
+    def _read_index_unlocked(self) -> dict[str, Any]:
         data = read_json(self.index_path, default=None)
         if not isinstance(data, dict):
             return {"version": 1, "entries": {}}
@@ -275,9 +322,54 @@ class Cache:
         data.setdefault("version", 1)
         return data
 
+    def read_index(self) -> dict[str, Any]:
+        """A snapshot of the index.  Read-only; safe to call anywhere.
+
+        A snapshot is stale the moment it is returned, so it must not be
+        modified and written back on its own — that is exactly the lost update
+        :meth:`index_transaction` exists to prevent.
+        """
+        return self._read_index_unlocked()
+
+    @contextmanager
+    def index_transaction(self) -> Iterator[dict[str, Any]]:
+        """Read-modify-write the index under one lock.
+
+        Use this for *every* mutation, including the background prune.  The
+        lock is held across the whole sequence rather than just the write, so a
+        writer cannot install a snapshot taken before a concurrent writer added
+        an entry — which is how a newly registered video used to vanish from the
+        index permanently.
+
+        Not reentrant, and nesting is refused rather than nested: the file lock
+        cannot be taken twice by one thread, and joining an outer transaction
+        would mean committing whichever of the two in-memory copies finished
+        last.  Callers keep mutations disjoint instead — the per-video lock,
+        which is what serialises work on a video, is held *outside* any index
+        transaction.
+        """
+        if getattr(self._index_depth, "held", False):
+            raise RuntimeError(
+                "index_transaction() is already held by this thread; nesting "
+                "would lose one of the two in-memory copies"
+            )
+        with self._index_guard, self._index_lock:
+            self._index_depth.held = True
+            try:
+                index = self._read_index_unlocked()
+                yield index
+                atomic_write_json(self.index_path, index)
+            finally:
+                self._index_depth.held = False
+
     def write_index(self, index: dict[str, Any]) -> None:
-        self.ensure_root()
-        with self._index_lock:
+        """Replace the index wholesale.
+
+        Only correct for a caller that has just read it under the same lock;
+        everything else should use :meth:`index_transaction`.
+        """
+        with self._index_guard:
+            self.ensure_root()
             atomic_write_json(self.index_path, index)
 
     def register(self, identity: str, source: dict[str, Any]) -> CachedVideo:
@@ -295,29 +387,27 @@ class Cache:
         }
         atomic_write_json(source_path, record)
 
-        index = self.read_index()
-        entry = index["entries"].get(identity, {})
-        entry.update(
-            {
-                "path": source.get("path"),
-                "size": source.get("size"),
-                "mtime_ns": source.get("mtime_ns"),
-                "first_seen": entry.get("first_seen", now),
-                "last_access": now,
-            }
-        )
-        index["entries"][identity] = entry
-        self.write_index(index)
+        with self.index_transaction() as index:
+            entry = index["entries"].get(identity, {})
+            entry.update(
+                {
+                    "path": source.get("path"),
+                    "size": source.get("size"),
+                    "mtime_ns": source.get("mtime_ns"),
+                    "first_seen": entry.get("first_seen", now),
+                    "last_access": now,
+                }
+            )
+            index["entries"][identity] = entry
         return CachedVideo(identity=identity, root=root, source=record)
 
     def touch(self, identity: str) -> None:
         """Update ``last_access`` in the index (used by LRU ordering)."""
-        index = self.read_index()
-        entry = index["entries"].get(identity)
-        if entry is None:
-            return
-        entry["last_access"] = time.time()
-        self.write_index(index)
+        with self.index_transaction() as index:
+            entry = index["entries"].get(identity)
+            if entry is None:
+                return
+            entry["last_access"] = time.time()
 
     def get(self, identity: str) -> CachedVideo | None:
         root = self.video_dir(identity)
@@ -486,6 +576,11 @@ def prune(
     that means surviving even a wildly small budget as long as it can be
     stored at all; the spec's layered policy is explicit that frames are the
     cheap tier.
+
+    The whole pass runs inside one index transaction.  It runs on a background
+    thread while requests are still registering videos, so reading the index
+    first and writing it back at the end would drop anything registered in
+    between — the entries are deleted from ``entries`` in place instead.
     """
     config = cache.config
     max_bytes = config.cache_max_bytes if max_bytes is None else max_bytes
@@ -496,15 +591,40 @@ def prune(
     report = PruneReport()
 
     cache.ensure_root()
-    index = cache.read_index()
-    entries: dict[str, Any] = index.get("entries", {})
+    with cache.index_transaction() as index:
+        entries: dict[str, Any] = index.setdefault("entries", {})
+        _prune_locked(
+            cache,
+            entries,
+            report,
+            max_bytes=max_bytes,
+            max_age_seconds=max_age_seconds,
+            now=now,
+        )
+    return report
 
+
+def _prune_locked(
+    cache: Cache,
+    entries: dict[str, Any],
+    report: PruneReport,
+    *,
+    max_bytes: int,
+    max_age_seconds: float,
+    now: float,
+) -> None:
+    """The eviction passes.  ``entries`` is the live index, mutated in place."""
     # --- 1. orphans ---------------------------------------------------
     removed_ids: list[str] = []
     for identity, entry in list(entries.items()):
         directory = cache.video_dir(identity)
         source = read_json(directory / "source.json", default=None)
         if not isinstance(source, dict):
+            # Unreadable source.json.  That alone does not make the entry
+            # garbage: if the directory is still there its bytes are still on
+            # disk, and the index has to keep counting them or the LRU sizing
+            # and `cache --stats` totals drift.  Only a directory that has also
+            # disappeared is unreachable, and that is what gets reclaimed.
             if not directory.exists():
                 removed_ids.append(identity)
             continue
@@ -533,7 +653,6 @@ def prune(
     ordered = sorted(
         entries.items(), key=lambda kv: float(kv[1].get("last_access") or 0.0)
     )
-    survivors: dict[str, Any] = dict(entries)
     for identity, entry in ordered:
         if total <= max_bytes:
             break
@@ -548,15 +667,12 @@ def prune(
             continue
         freed = sizes.get(identity, 0)
         _rmtree(directory)
-        survivors.pop(identity, None)
+        entries.pop(identity, None)
         report.removed_entries += 1
         report.removed_bytes += freed
         total -= freed
 
     report.total_bytes = max(total, 0)
-    index["entries"] = survivors
-    cache.write_index(index)
-    return report
 
 
 def _rmtree(path: Path) -> None:

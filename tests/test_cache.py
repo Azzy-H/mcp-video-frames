@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -243,6 +244,215 @@ class TestRegistration:
             names.add(cached.root.name)
             assert cached.root.name == identity[:16]
         assert len(names) == 3
+
+
+class TestIndexAtomicity:
+    """Reading the index and writing it back is not atomic on its own.
+
+    ``register``, ``touch`` and the background ``prune`` all mutate the index.
+    When the read and the write were separate calls, a writer that read before
+    a concurrent writer committed would overwrite it with its stale snapshot,
+    and the newer entry disappeared from the index for good.  Every mutation
+    therefore goes through ``index_transaction``, which holds one lock across
+    the whole sequence.
+    """
+
+    def test_concurrent_registrations_all_survive(self, cache: Cache, tmp_path):
+        videos = [fake_video(tmp_path / f"v{i}.mp4", size=1024 + i) for i in range(6)]
+        pairs = [file_identity(video) for video in videos]
+        errors: list[BaseException] = []
+        barrier = threading.Barrier(len(pairs))
+
+        def worker(pair) -> None:
+            try:
+                barrier.wait(timeout=10)
+                cache.register(*pair)
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(pair,)) for pair in pairs]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        assert not errors, errors
+        recorded = set(cache.read_index()["entries"])
+        expected = {identity for identity, _source in pairs}
+        assert recorded == expected
+
+    def test_nesting_is_refused_not_silently_lost(self, cache: Cache):
+        """Nesting would commit whichever in-memory copy finished last."""
+        with cache.index_transaction():
+            with pytest.raises(RuntimeError, match="already held"):
+                with cache.index_transaction():
+                    pass
+        # The refusal must not leave the guard stuck on.
+        with cache.index_transaction() as index:
+            index["entries"]["after"] = {"last_access": 1.0}
+        assert "after" in cache.read_index()["entries"]
+
+    def test_prune_does_not_drop_a_video_registered_during_the_pass(
+        self, cache: Cache, tmp_path
+    ):
+        """The background prune is the other writer; it used to clobber."""
+        original = fake_video(tmp_path / "original.mp4", size=4096)
+        cache.register(*file_identity(original))
+        entrant = fake_video(tmp_path / "entrant.mp4", size=8192)
+
+        started = threading.Event()
+        may_finish = threading.Event()
+        errors: list[BaseException] = []
+
+        def registrar() -> None:
+            try:
+                started.set()
+                cache.register(*file_identity(entrant))
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                may_finish.set()
+
+        thread = threading.Thread(target=registrar)
+        # Run the prune concurrently with the registration.
+        thread.start()
+        started.wait(timeout=10)
+        prune(cache)
+        may_finish.wait(timeout=10)
+        thread.join(timeout=20)
+
+        assert not errors, errors
+        recorded = set(cache.read_index()["entries"])
+        assert file_identity(entrant)[0] in recorded, (
+            "the video registered during the prune was dropped from the index"
+        )
+
+    def test_a_snapshot_cannot_be_written_back_by_accident(
+        self, cache: Cache, tmp_path
+    ):
+        """``read_index`` re-reads the file, so a mutated snapshot is inert."""
+        video = fake_video(tmp_path / "v.mp4")
+        cache.register(*file_identity(video))
+        snapshot = cache.read_index()
+        snapshot["entries"]["bogus"] = {"last_access": 0}
+        assert "bogus" not in cache.read_index()["entries"]
+
+
+class TestAtomicReplaceUnderContention:
+    """``os.replace`` onto a busy destination, which Windows refuses.
+
+    Registering a video writes ``source.json`` before touching the index, and
+    several clients can ask for the same video at once.  Windows fails the
+    rename with ``PermissionError`` when the destination has a concurrent
+    handle, so writers stampeding one entry used to fail outright — and unlike
+    the index case there was no retry to fall back on.
+    """
+
+    def test_many_threads_registering_one_video_all_succeed(
+        self, cache: Cache, tmp_path
+    ):
+        video = fake_video(tmp_path / "shared.mp4", size=4096)
+        identity, source = file_identity(video)
+        threads_wanted = 12
+        barrier = threading.Barrier(threads_wanted)
+        errors: list[BaseException] = []
+        succeeded = 0
+        lock = threading.Lock()
+
+        def worker() -> None:
+            nonlocal succeeded
+            try:
+                barrier.wait(timeout=20)
+                cache.register(identity, source)
+                with lock:
+                    succeeded += 1
+            except BaseException as exc:  # noqa: BLE001 - asserted below
+                with lock:
+                    errors.append(exc)
+
+        pool = [threading.Thread(target=worker) for _ in range(threads_wanted)]
+        for thread in pool:
+            thread.start()
+        for thread in pool:
+            thread.join(timeout=30)
+
+        assert not errors, errors[:3]
+        assert succeeded == threads_wanted
+
+    def test_no_temp_files_are_left_by_contention(self, cache: Cache, tmp_path):
+        video = fake_video(tmp_path / "shared.mp4", size=4096)
+        identity, source = file_identity(video)
+        barrier = threading.Barrier(6)
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                barrier.wait(timeout=20)
+                cache.register(identity, source)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        pool = [threading.Thread(target=worker) for _ in range(6)]
+        for thread in pool:
+            thread.start()
+        for thread in pool:
+            thread.join(timeout=30)
+
+        assert not errors, errors[:3]
+        leftovers = list(cache.root.rglob("*.tmp"))
+        assert leftovers == [], leftovers
+
+    def test_exhausted_retries_still_raise(self, monkeypatch, cache: Cache, tmp_path):
+        """A write that did not happen must not look like one that did."""
+        from mcp_video_frames import cache as cache_module
+
+        calls = {"n": 0}
+
+        def always_busy(_src, _dst, *args, **kwargs):
+            calls["n"] += 1
+            raise PermissionError(5, "Access is denied")
+
+        monkeypatch.setattr(cache_module.os, "replace", always_busy)
+        monkeypatch.setattr(cache_module, "_REPLACE_BACKOFF_SECONDS", 0.0)
+        with pytest.raises(PermissionError):
+            atomic_write_json(tmp_path / "target.json", {"a": 1})
+        assert calls["n"] == cache_module._REPLACE_RETRIES, calls
+        assert not (tmp_path / "target.json").exists()
+
+    def test_a_non_permission_error_is_not_retried(self, monkeypatch, tmp_path):
+        """Only the transient Windows contention error is worth retrying."""
+        from mcp_video_frames import cache as cache_module
+
+        calls = {"n": 0}
+
+        def boom(_src, _dst, *args, **kwargs):
+            calls["n"] += 1
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(cache_module.os, "replace", boom)
+        with pytest.raises(OSError):
+            atomic_write_json(tmp_path / "target.json", {"a": 1})
+        assert calls["n"] == 1, "a non-contention error must fail on the first try"
+
+    def test_a_transient_failure_is_retried_and_succeeds(self, monkeypatch, tmp_path):
+        """The real case: contended for a moment, then accepted."""
+        from mcp_video_frames import cache as cache_module
+
+        real_replace = cache_module.os.replace
+        state = {"failures": 3}
+
+        def flaky(src, dst, *args, **kwargs):
+            if state["failures"] > 0:
+                state["failures"] -= 1
+                raise PermissionError(5, "Access is denied")
+            return real_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(cache_module.os, "replace", flaky)
+        monkeypatch.setattr(cache_module, "_REPLACE_BACKOFF_SECONDS", 0.0)
+        target = tmp_path / "eventual.json"
+        atomic_write_json(target, {"a": 1})
+        assert state["failures"] == 0
+        assert json.loads(target.read_text(encoding="utf-8")) == {"a": 1}
 
 
 class TestMetaLayering:

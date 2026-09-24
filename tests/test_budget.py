@@ -19,6 +19,50 @@ from mcp_video_frames.budget import (
 from mcp_video_frames.errors import InputError, LimitError
 
 
+class TestTimeoutBudgetIsConsistent:
+    """A lock must outlast every legitimate hold of it.
+
+    ``video_full_info`` scans the whole file while holding the per-video lock,
+    so the lock timeout has to cover the whole scan.  These were once
+    independent constants — 120 s for the lock against 12 h per scan pass —
+    which meant a second client touching the same long video waited 120 s and
+    then failed, contradicting the documented promise that clients share one
+    cache.
+    """
+
+    def test_lock_timeout_covers_the_whole_scan(self):
+        from mcp_video_frames.config import SCAN_PHASE_TIMEOUT, VIDEO_LOCK_TIMEOUT
+
+        # Three sequential passes (scene, silence, loudness), plus slack for the
+        # extraction around them.
+        assert VIDEO_LOCK_TIMEOUT > 3 * SCAN_PHASE_TIMEOUT
+
+    def test_scan_passes_share_one_constant(self):
+        from mcp_video_frames import scan
+        from mcp_video_frames.config import SCAN_PHASE_TIMEOUT
+
+        for name in ("SCENE_TIMEOUT", "SILENCE_TIMEOUT", "LOUDNESS_TIMEOUT"):
+            assert getattr(scan, name) == SCAN_PHASE_TIMEOUT
+
+    def test_cache_lock_default_is_the_configured_one(self):
+        from mcp_video_frames.cache import Cache
+        from mcp_video_frames.config import VIDEO_LOCK_TIMEOUT
+
+        import inspect
+
+        default = inspect.signature(Cache.locked).parameters["timeout"].default
+        assert default == VIDEO_LOCK_TIMEOUT
+
+    def test_fallback_stale_lock_outlasts_a_scan(self):
+        """The O_EXCL fallback must not reap a lock a live scan is holding."""
+        from mcp_video_frames import _locks
+        from mcp_video_frames.config import VIDEO_LOCK_TIMEOUT
+
+        if _locks.HAVE_FILELOCK:
+            pytest.skip("filelock is installed; the fallback class is not in use")
+        assert _locks.FileLock.STALE_SECONDS > VIDEO_LOCK_TIMEOUT
+
+
 class TestFrameCount:
     @pytest.mark.parametrize(
         ("start", "end", "interval", "expected"),
