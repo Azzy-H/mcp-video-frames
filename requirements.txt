@@ -1,0 +1,28 @@
+# Runtime dependencies for local deployment.
+#
+# This file exists so a local setup can install exactly these two packages
+# into the project's own .venv, without installing the project itself:
+#
+#     python -m venv .venv
+#     .venv/Scripts/pip install -r requirements.txt      # Windows
+#     .venv/bin/pip     install -r requirements.txt      # macOS / Linux
+#
+# `setup_mcp.py` does the same thing and writes the client configuration.
+#
+# ffmpeg / ffprobe are NOT listed here: they are external binaries, not Python
+# packages. Install them with your platform's package manager and make sure
+# they are on PATH (or point FFMPEG_PATH / FFPROBE_PATH at them).
+
+# The MCP SDK (official, maintained by the Model Context Protocol project).
+# Both published API generations are supported: 1.x exposes FastMCP, 2.x
+# renamed it to MCPServer (see mcp_video_frames.server._load_sdk).
+#
+# Note: this is NOT the same thing as the standalone `fastmcp` package on
+# PyPI (maintained separately by PrefectHQ). We deliberately depend on the
+# official SDK instead: it defines the protocol content types directly
+# (mcp.types.TextContent / ImageContent), and it has a far smaller dependency
+# tree for a stdio-only server.
+mcp>=1.2
+
+# Cross-platform file locking for the shared cache directory.
+filelock>=3.12
