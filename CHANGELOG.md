@@ -6,20 +6,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- `PUBLISHING.md`, and a `Publish` workflow that builds and uploads to PyPI
-  through Trusted Publishing (OIDC, no stored API token): a published GitHub
-  Release goes to PyPI, a manual run goes to TestPyPI.
-
-### Changed
-
-- Packaging metadata modernised ahead of the first PyPI upload: the licence is
-  now an SPDX expression (PEP 639) rather than the deprecated table plus
-  classifier, the version is read from `mcp_video_frames.__version__` instead of
-  being duplicated in `pyproject.toml`, Python 3.14 is declared, and the sdist
-  file list is explicit so a scratch directory cannot leak into a release.
-
 ## [0.1.0]
 
 First release.
@@ -72,6 +58,9 @@ First release.
   a crash and replaces the text with a generic "Error executing tool ...",
   which would discard the numbers and the suggested fix that this server
   exists to provide.
+- `PUBLISHING.md`, and a `Publish` workflow that builds and uploads to PyPI
+  through Trusted Publishing (OIDC, no stored API token): a published GitHub
+  Release goes to PyPI, a manual run goes to TestPyPI.
 
 ### Fixed
 
@@ -135,6 +124,11 @@ First release.
   still lines up with what `view_frames` returns, but the one thing that
   differs is now stated once instead of implied. (No released version emitted
   the old shape.)
+- Packaging metadata: the licence is carried as an SPDX expression (PEP 639)
+  with `LICENSE` attached, the version is read from
+  `mcp_video_frames.__version__` rather than duplicated in `pyproject.toml`,
+  Python 3.14 is declared, and the sdist file list is explicit so a scratch
+  directory cannot leak into a release.
 
 [Unreleased]: https://github.com/Azzy-H/mcp-video-frames/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Azzy-H/mcp-video-frames/releases/tag/v0.1.0
