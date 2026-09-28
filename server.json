@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Azzy-H/mcp-video-frames",
+  "title": "Video Frames",
+  "description": "MCP server that lets image-only models look at video: timecoded frames, measurable properties.",
+  "repository": {
+    "url": "https://github.com/Azzy-H/mcp-video-frames",
+    "source": "github"
+  },
+  "version": "0.1.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-video-frames",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

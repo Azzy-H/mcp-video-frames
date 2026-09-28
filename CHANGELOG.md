@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1]
+
+### Added
+
+- MCP Registry metadata: `server.json`, and an ownership marker in the README
+  (`mcp-name: io.github.Azzy-H/mcp-video-frames`). The registry looks for that
+  marker inside the published PyPI description to confirm the package really
+  belongs to this server — which is why this release exists at all, since 0.1.0
+  was published without it and PyPI versions cannot be reused.
+- The `Publish` workflow now also publishes the server to the
+  [MCP Registry](https://registry.modelcontextprotocol.io/) once PyPI has
+  accepted the release, authenticating with GitHub OIDC so that no token is
+  stored anywhere.
+
+No functional change to the server itself.
+
 ## [0.1.0]
 
 First release.
@@ -130,5 +146,6 @@ First release.
   Python 3.14 is declared, and the sdist file list is explicit so a scratch
   directory cannot leak into a release.
 
-[Unreleased]: https://github.com/Azzy-H/mcp-video-frames/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Azzy-H/mcp-video-frames/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Azzy-H/mcp-video-frames/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Azzy-H/mcp-video-frames/releases/tag/v0.1.0

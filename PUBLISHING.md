@@ -126,22 +126,53 @@ avoid it — an exported variable does not linger on disk. Trusted Publishing
 
 ## Releasing the next version
 
-1. Bump `__version__` in `src/mcp_video_frames/__init__.py`.
+1. Bump `__version__` in `src/mcp_video_frames/__init__.py`, and the two
+   `version` fields in `server.json`.
 2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new version heading.
 3. `python -m build && python -m twine check --strict dist/*`.
 4. Commit, tag `vX.Y.Z`, push the tag.
-5. Publish the GitHub Release.
+5. Publish the GitHub Release. The workflow takes it from there: PyPI first,
+   then the MCP Registry.
 
-## Optional: the official MCP registry
+## The MCP Registry
 
-Publishing to PyPI is enough to make `pip install mcp-video-frames` work. To
-also appear in the [MCP registry](https://registry.modelcontextprotocol.io/),
-the registry has to be convinced you own the name. For a PyPI-backed server that
-means adding a marker to `README.md`:
+The server is also listed in the
+[MCP Registry](https://registry.modelcontextprotocol.io/), which hosts metadata
+only — installation still goes through PyPI.
 
-```html
-<!-- mcp-name: io.github.Azzy-H/mcp-video-frames -->
+Two things make that work, and they have to stay in step:
+
+- **`server.json`** is the registry entry. Its `name`
+  (`io.github.Azzy-H/mcp-video-frames`) is fixed: the `io.github.<account>`
+  prefix is the namespace the publishing account is allowed to claim, so
+  changing it means registering under a different namespace.
+- **The marker in `README.md`**,
+  `<!-- mcp-name: io.github.Azzy-H/mcp-video-frames -->`. For a PyPI-backed
+  server the registry proves ownership by finding that string in the *published*
+  package description, so it must match `name` in `server.json` exactly — and it
+  only counts once a release containing it is on PyPI. 0.1.1 exists for no other
+  reason than that 0.1.0 shipped without it.
+
+The `registry` job in `publish.yml` runs after `pypi` and authenticates with
+GitHub OIDC (`mcp-publisher login github-oidc`), so there is no registry secret
+to keep. It waits for the new version to become visible on PyPI before
+publishing, because that is where the registry reads the description from.
+
+To publish by hand instead:
+
+```sh
+# from the repository root, with server.json already at the released version
+curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+./mcp-publisher login github     # device flow; opens a browser
+./mcp-publisher publish
 ```
 
-(or shipping a `server.json`), then publishing with `mcp-publisher`. That is a
-separate step from PyPI and can be done any time after the first release.
+Then check the listing:
+
+```sh
+curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.Azzy-H/mcp-video-frames"
+```
+
+The registry is in preview: namespaces and data may be reset before general
+availability, so treat a failed publish there as recoverable rather than
+catastrophic. The PyPI release is unaffected either way.

@@ -1,5 +1,7 @@
 # mcp-video-frames — Video MCP Server
 
+<!-- mcp-name: io.github.Azzy-H/mcp-video-frames -->
+
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org/) [![ffmpeg](https://img.shields.io/badge/ffmpeg-%23007808.svg?style=flat&logo=ffmpeg&logoColor=white)](https://ffmpeg.org/) [![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-1f6feb.svg?style=flat)](https://modelcontextprotocol.io/)
 
 An MCP server that lets image-only models look at video: frames with timecodes, plus measurable video properties.
