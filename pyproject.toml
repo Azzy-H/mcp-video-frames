@@ -1,25 +1,26 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "mcp-video-frames"
-version = "0.1.0"
+dynamic = ["version"]
 description = "MCP server that lets models without video input look at video: frames with timecodes, plus measurable video properties."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Azzy-H" }]
 keywords = ["mcp", "video", "frames", "ffmpeg", "model-context-protocol"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Multimedia :: Video",
 ]
 dependencies = [
@@ -37,13 +38,35 @@ dev = ["pytest>=7.4", "pytest-timeout>=2.2"]
 
 [project.urls]
 Homepage = "https://github.com/Azzy-H/mcp-video-frames"
+Repository = "https://github.com/Azzy-H/mcp-video-frames"
+Changelog = "https://github.com/Azzy-H/mcp-video-frames/blob/main/CHANGELOG.md"
 Issues = "https://github.com/Azzy-H/mcp-video-frames/issues"
 
 [project.scripts]
 mcp-video-frames = "mcp_video_frames.__main__:main"
 
+[tool.hatch.version]
+# Single source of truth: the version lives in the package, not here.
+path = "src/mcp_video_frames/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_video_frames"]
+
+# Listed explicitly so that scratch directories which happen to escape the
+# .gitignore (`.piptmp/`, `_btmp/`, and friends) can never leak into a release.
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/pyproject.toml",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/requirements.txt",
+  "/run_server.py",
+  "/setup_mcp.py",
+  "/test_server.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

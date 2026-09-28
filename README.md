@@ -15,6 +15,26 @@ The server provides these tools:
 
 This is a local server: it is not hosted anywhere, and a client has to be pointed at it. See **Self-Hosted** below.
 
+## Install from PyPI
+
+```sh
+pip install mcp-video-frames      # or run it without installing: uvx mcp-video-frames
+```
+
+That installs one console script, and the console script is the server. Point a client at it:
+
+```json
+{
+  "mcpServers": {
+    "video-frames": { "command": "mcp-video-frames" }
+  }
+}
+```
+
+With no subcommand and piped stdio it speaks MCP; on a terminal it prints help instead of hanging. `mcp-video-frames doctor` checks the environment it will run in.
+
+This path expects `ffmpeg` and `ffprobe` on `PATH`. If you would rather have them installed into a private virtual environment, along with a ready-made client config, use **Self-Hosted** below instead.
+
 ## Self-Hosted
 
 Installs nothing into your system Python: dependencies go into the project's own `.venv/`, and the client config points at that interpreter directly.

@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `PUBLISHING.md`, and a `Publish` workflow that builds and uploads to PyPI
+  through Trusted Publishing (OIDC, no stored API token): a published GitHub
+  Release goes to PyPI, a manual run goes to TestPyPI.
+
+### Changed
+
+- Packaging metadata modernised ahead of the first PyPI upload: the licence is
+  now an SPDX expression (PEP 639) rather than the deprecated table plus
+  classifier, the version is read from `mcp_video_frames.__version__` instead of
+  being duplicated in `pyproject.toml`, Python 3.14 is declared, and the sdist
+  file list is explicit so a scratch directory cannot leak into a release.
+
 ## [0.1.0]
 
 First release.

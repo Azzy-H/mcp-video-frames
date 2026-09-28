@@ -1,0 +1,101 @@
+name: Publish
+
+# Releases go out through PyPI Trusted Publishing, so no API token is stored
+# anywhere: GitHub mints a short-lived OIDC token and PyPI exchanges it for a
+# one-shot upload credential.  The pending-publisher entry on PyPI must name
+# this repository, this workflow file and the `pypi` environment.
+#
+#   * a published GitHub Release  -> PyPI
+#   * a manual run                -> TestPyPI (rehearsal)
+#
+# Both jobs are gated on the test job, so a red suite stops the release.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where to upload the distributions built by this run
+        type: choice
+        options: [testpypi, none]
+        default: testpypi
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor and the current stable; the middle versions are
+        # covered by the floor/ceiling pair for a package this size.
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      # `integration` needs a real ffmpeg on PATH and real video, which a
+      # release gate should not depend on.
+      - run: python -m pytest -m "not integration"
+
+  build:
+    name: Build sdist and wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # twine >= 7 is required to upload core metadata 2.5, which is what the
+      # PEP 639 SPDX licence field produces.
+      - run: python -m pip install --upgrade build "twine>=7"
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    name: Publish to TestPyPI
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/mcp-video-frames
+    permissions:
+      id-token: write # the OIDC token Trusted Publishing exchanges for upload rights
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: Publish to PyPI
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mcp-video-frames
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
